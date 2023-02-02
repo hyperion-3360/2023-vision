@@ -1,0 +1,1 @@
+gst-launch-1.0 v4l2src device=/dev/video1 ! video/x-raw, framerate=30/1,width=640,height=480 ! videoconvert ! omxh264enc bitrate=800000 ! rtph264pay config-interval=1 pt=96 ! udpsink host=192.168.0.219 port=5000
