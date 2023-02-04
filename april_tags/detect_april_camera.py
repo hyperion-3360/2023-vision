@@ -4,6 +4,7 @@ import argparse
 import os
 import json
 import numpy as np
+import math
 
 def export(avg, poses, sink):
     #file output
@@ -15,9 +16,49 @@ def export(avg, poses, sink):
 
     elif sink['type'].lower() == 'n':
         print("not supported yet!")
-    elif sink['type'].lower() == 'p':
-        print(avg)
-        print(poses)
+#    elif sink['type'].lower() == 'p':
+#        print(avg)
+#        print(poses)
+
+def quaternion_rotation_matrix(Q):
+    """
+    Covert a quaternion into a full three-dimensional rotation matrix.
+ 
+    Input
+    :param Q: A 4 element array representing the quaternion (q0,q1,q2,q3) 
+ 
+    Output
+    :return: A 3x3 element matrix representing the full 3D rotation matrix. 
+             This rotation matrix converts a point in the local reference 
+             frame to a point in the global reference frame.
+    """
+    # Extract the values from Q
+    q0 = Q[0]
+    q1 = Q[1]
+    q2 = Q[2]
+    q3 = Q[3]
+     
+    # First row of the rotation matrix
+    r00 = 2 * (q0 * q0 + q1 * q1) - 1
+    r01 = 2 * (q1 * q2 - q0 * q3)
+    r02 = 2 * (q1 * q3 + q0 * q2)
+     
+    # Second row of the rotation matrix
+    r10 = 2 * (q1 * q2 + q0 * q3)
+    r11 = 2 * (q0 * q0 + q2 * q2) - 1
+    r12 = 2 * (q2 * q3 - q0 * q1)
+     
+    # Third row of the rotation matrix
+    r20 = 2 * (q1 * q3 - q0 * q2)
+    r21 = 2 * (q2 * q3 + q0 * q1)
+    r22 = 2 * (q0 * q0 + q3 * q3) - 1
+     
+    # 3x3 rotation matrix
+    rot_matrix = np.array([[r00, r01, r02],
+                           [r10, r11, r12],
+                           [r20, r21, r22]])
+                            
+    return rot_matrix
 
 def process_detection( camera_params, detector, frame, result, tag_info, gui ):
     #the function assumes the camera is centered within the robot construction
@@ -46,9 +87,14 @@ def process_detection( camera_params, detector, frame, result, tag_info, gui ):
         tag_dict = tag_info.get(result.tag_id)
 
         if tag_dict:
-            tag_pose = np.array(tag_dict['transform']).reshape((4,4))
-
-            sz = tag_dict['size']
+            tag_pose = np.zeros((4,4))
+            Q = [ tag_dict['pose']['rotation']['quaternion'][x] for x in ['W', 'X', 'Y', 'Z']]
+            rot = quaternion_rotation_matrix(Q)
+            tag_pose[0:3,0:3] = rot
+            T = np.array([ tag_dict['pose']['translation'][x] for x in ['x', 'y', 'z']]).T
+            tag_pose[0:3,3] = T
+            tag_pose[3,3] = 1
+            sz = 6
 
             estimated_pose = np.array(pose)
 
@@ -56,15 +102,19 @@ def process_detection( camera_params, detector, frame, result, tag_info, gui ):
             estimated_pose[1][3] *= sz
             estimated_pose[2][3] *= sz
 
-            tag_relative_camera_pose = np.linalg.inv(estimated_pose)
+            x, y , z = estimated_pose[0][3], estimated_pose[1][3], estimated_pose[2][3]
 
-            world_camera_pos = np.matmul(tag_pose, tag_relative_camera_pose)
+            dist = math.sqrt(x*x + y*y + z*z)
+
+#            tag_relative_camera_pose = np.linalg.inv(estimated_pose)
+
+#            world_camera_pos = np.matmul(tag_pose, tag_relative_camera_pose)
 
             if gui:
-                cv2.putText(frame, str(result.tag_id), (ptA[0], ptA[1] - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                cv2.putText(frame, "Id: {} at x: {:5.2f} y: {:5.2f}".format(str(result.tag_id), x, y), (ptA[0], ptA[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                cv2.putText(frame, "z:{:5.2f} dist: {:5.2f}".format(z, dist), (ptA[0], ptA[1] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            return world_camera_pos
+            return None
 
     return None
 
@@ -97,7 +147,8 @@ def main():
     ap.add_argument("device", type=str, action='store', help="device to capture from" )
 
     #the game layout of AprilTags in json format
-    ap.add_argument("-e --environment", dest='environment', default='environment.json', action='store', help="json file containing the details of the AprilTags env")
+#    ap.add_argument("-e --environment", dest='environment', default='environment.json', action='store', help="json file containing the details of the AprilTags env")
+    ap.add_argument("-e --environment", dest='environment', default='env.json', action='store', help="json file containing the details of the AprilTags env")
 
     #camera parameters as provided by the output of the calibrate_camera.py
     ap.add_argument("-c --camera", dest='camera', default='camera.json', action='store', help="json file containing the camera parameters")
@@ -142,7 +193,8 @@ def main():
         try:
             with open(args['environment'], 'r') as f:
                 env_json = json.load(f)
-                tag_info = {x['id']: x for x in env_json['tags']}
+#                tag_info = {x['id']: x for x in env_json['tags']}
+                tag_info = {x['ID']: x for x in env_json['tags']}
         except(FileNotFoundError, json.JSONDecodeError) as e:
             print("Something wrong with the environment file... :(")
             quit()
@@ -159,11 +211,14 @@ def main():
     width = 640
     height = 480
 
-    #this will work for USB web cams
-    gstreamer_str = "v4l2src device={} ! video/x-raw,framerate=30/1,width={},height={} ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True".format(args['device'], width, height)
+    if 0:
+        #this will work for USB web cams
+        gstreamer_str = "v4l2src device={} ! video/x-raw,framerate=30/1,width={},height={} ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True".format(args['device'], width, height)
 
-    #using gstreamer provides greater control over capture parameters and is easier to test the camera setup using gst-launch
-    cap = cv2.VideoCapture( gstreamer_str, cv2.CAP_GSTREAMER)
+        #using gstreamer provides greater control over capture parameters and is easier to test the camera setup using gst-launch
+        cap = cv2.VideoCapture( gstreamer_str, cv2.CAP_GSTREAMER)
+    else:
+        cap = cv2.VideoCapture( 0 )
 
     if recording:
         video_out = cv2.VideoWriter(args['record'], cv2.VideoWriter_fourcc(*'MJPG'),15, (640,480))
@@ -172,10 +227,11 @@ def main():
     img_seq = 0
 
     #precalculate the optimal distortion matrix and crop parameters based on the image size
-    dist_coeffs = np.array(camera_params['dist'])
-    camera_matrix = np.array([cam_json['fx'],0, cam_json['cx'], 0, cam_json['fy'], cam_json['cy'], 0, 0, 1]).reshape((3,3))
-    new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (width, height), 1, (width, height))
-    crop_x, crop_y, crop_w, crop_h = roi
+    if not save_images:
+        dist_coeffs = np.array(camera_params['dist'])
+        camera_matrix = np.array([cam_json['fx'],0, cam_json['cx'], 0, cam_json['fy'], cam_json['cy'], 0, 0, 1]).reshape((3,3))
+        new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (width, height), 1, (width, height))
+        crop_x, crop_y, crop_w, crop_h = roi
 
     sink = setup_sink(args)
 
@@ -197,14 +253,10 @@ def main():
                     cv2.imwrite(os.path.join(path, 'calibration_{}.png'.format(img_seq)),frame)
                     img_seq += 1
             else:
-                #first undistort and crop it
-                undistorted = cv2.undistort(frame, new_camera_matrix, dist_coeffs, None, camera_matrix)
-                undistorted = undistorted[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
-
                 #convert to grayscale
-                gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-                options = apriltag.DetectorOptions( families=env_json['tag_family'],
+                options = apriltag.DetectorOptions( families='tag16h5',
                                                     debug=False, 
                                                     refine_decode=True,
                                                     refine_pose=True)
@@ -216,7 +268,7 @@ def main():
                 estimated_poses = []
                 # loop over the AprilTag detection results
                 for r in results:
-                    pose = process_detection( camera_params, detector, undistorted, r, tag_info, bool(args['gui']) or recording )
+                    pose = process_detection( camera_params, detector, frame, r, tag_info, bool(args['gui']) or recording )
                     if isinstance(pose, np.ndarray):
                         estimated_poses.append(pose)
 
@@ -232,10 +284,10 @@ def main():
 
             if args['gui']:
                 # show the output image after AprilTag detection
-                cv2.imshow("Image", undistorted)
+                cv2.imshow("Image", frame)
 
             if recording:
-                video_out.write(undistorted) 
+                video_out.write(frame) 
 
     cap.release()
 
