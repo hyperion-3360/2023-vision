@@ -94,7 +94,7 @@ def process_detection( camera_params, detector, frame, result, tag_info, gui ):
             T = np.array([ tag_dict['pose']['translation'][x] for x in ['x', 'y', 'z']]).T
             tag_pose[0:3,3] = T
             tag_pose[3,3] = 1
-            sz = 6
+            sz = 0.15
 
             estimated_pose = np.array(pose)
 
@@ -106,9 +106,11 @@ def process_detection( camera_params, detector, frame, result, tag_info, gui ):
 
             dist = math.sqrt(x*x + y*y + z*z)
 
-#            tag_relative_camera_pose = np.linalg.inv(estimated_pose)
+            tag_relative_camera_pose = np.linalg.inv(estimated_pose)
 
-#            world_camera_pos = np.matmul(tag_pose, tag_relative_camera_pose)
+            world_camera_pos = np.matmul(tag_pose, tag_relative_camera_pose)
+
+            print(world_camera_pos)
 
             if gui:
                 cv2.putText(frame, "Id: {} at x: {:5.2f} y: {:5.2f}".format(str(result.tag_id), x, y), (ptA[0], ptA[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -139,6 +141,9 @@ def clean_sink( sink ):
 def main():
     recording = False
     save_images = False
+
+    #pretty print numpy
+    np.set_printoptions(precision = 3, suppress = True)
 
     # construct the argument parser and parse the arguments
     ap = argparse.ArgumentParser()
@@ -193,7 +198,6 @@ def main():
         try:
             with open(args['environment'], 'r') as f:
                 env_json = json.load(f)
-#                tag_info = {x['id']: x for x in env_json['tags']}
                 tag_info = {x['ID']: x for x in env_json['tags']}
         except(FileNotFoundError, json.JSONDecodeError) as e:
             print("Something wrong with the environment file... :(")
