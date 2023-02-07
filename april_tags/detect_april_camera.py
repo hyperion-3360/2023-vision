@@ -20,6 +20,12 @@ def export(avg, poses, sink):
 #        print(avg)
 #        print(poses)
 
+def rot2eul(R):
+    beta = -np.arcsin(R[2,0])
+    alpha = np.arctan2(R[2,1]/np.cos(beta), R[2,2]/np.cos(beta))
+    gamma = np.arctan2(R[1,0]/np.cos(beta), R[0,0]/np.cos(beta))
+    return np.array([beta, alpha, gamma])
+
 def quaternion_rotation_matrix(Q):
     """
     Covert a quaternion into a full three-dimensional rotation matrix.
@@ -87,34 +93,49 @@ def process_detection( camera_params, detector, frame, result, tag_info, gui ):
         tag_dict = tag_info.get(result.tag_id)
 
         if tag_dict:
-            tag_pose = np.zeros((4,4))
-            Q = [ tag_dict['pose']['rotation']['quaternion'][x] for x in ['W', 'X', 'Y', 'Z']]
-            rot = quaternion_rotation_matrix(Q)
-            tag_pose[0:3,0:3] = rot
-            T = np.array([ tag_dict['pose']['translation'][x] for x in ['x', 'y', 'z']]).T
-            tag_pose[0:3,3] = T
-            tag_pose[3,3] = 1
-            sz = 0.15
+            if 0: #methode from 2921
+                tag_pose = np.zeros((4,4))
+                Q = [ tag_dict['pose']['rotation']['quaternion'][x] for x in ['W', 'X', 'Y', 'Z']]
+                rot = quaternion_rotation_matrix(Q)
+                tag_pose[0:3,0:3] = rot
+                T = np.array([ tag_dict['pose']['translation'][x] for x in ['x', 'y', 'z']]).T
+                tag_pose[0:3,3] = T
+                tag_pose[3,3] = 1
+                sz = 0.15
 
-            estimated_pose = np.array(pose)
+                estimated_pose = np.array(pose)
+                estimated_pose[0][3] *= sz
+                estimated_pose[1][3] *= sz
+                estimated_pose[2][3] *= sz
 
-            estimated_pose[0][3] *= sz
-            estimated_pose[1][3] *= sz
-            estimated_pose[2][3] *= sz
+                tag_relative_camera_pose = np.linalg.inv(estimated_pose)
+
+                global_position = np.matmul(tag_pose, tag_relative_camera_pose)
+            else: #methode from Race On
+                sz = 0.15
+                P = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+                estimated_pose = np.array(pose)
+                estimated_pose[0][3] *= sz
+                estimated_pose[1][3] *= sz
+                estimated_pose[2][3] *= sz
+                Pose_R = estimated_pose[0:3, 0:3]
+                Pose_T = estimated_pose[0:3, 3]
+                Q = [ tag_dict['pose']['rotation']['quaternion'][x] for x in ['W', 'X', 'Y', 'Z']]
+                R_g = quaternion_rotation_matrix(Q)
+                T_g = np.array([ tag_dict['pose']['translation'][x] for x in ['x', 'y', 'z']])
+
+                unofficial_tag_position = P @ Pose_R.T @ (-1 * Pose_T)
+                global_position = R_g @ unofficial_tag_position + T_g
 
             x, y , z = estimated_pose[0][3], estimated_pose[1][3], estimated_pose[2][3]
-
             dist = math.sqrt(x*x + y*y + z*z)
-
-            tag_relative_camera_pose = np.linalg.inv(estimated_pose)
-
-            world_camera_pos = np.matmul(tag_pose, tag_relative_camera_pose)
-
-            print(world_camera_pos)
+            print(global_position)
+            rx, ry, rz = rot2eul(Pose_R)
 
             if gui:
                 cv2.putText(frame, "Id: {} at x: {:5.2f} y: {:5.2f}".format(str(result.tag_id), x, y), (ptA[0], ptA[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 cv2.putText(frame, "z:{:5.2f} dist: {:5.2f}".format(z, dist), (ptA[0], ptA[1] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                cv2.putText(frame, "rx:{:5.2f} ry:{:5.2f} rz:{:5.2f}".format(rx, ry, rz), (ptA[0], ptA[1] - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             return None
 
@@ -215,7 +236,7 @@ def main():
     width = 640
     height = 480
 
-    if 0:
+    if 1:
         #this will work for USB web cams
         gstreamer_str = "v4l2src device={} ! video/x-raw,framerate=30/1,width={},height={} ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True".format(args['device'], width, height)
 
