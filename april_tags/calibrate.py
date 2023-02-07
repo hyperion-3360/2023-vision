@@ -2,6 +2,7 @@ from __future__ import print_function
 import numpy as np
 import cv2
 import argparse
+from glob import glob
 
 def main():
 
@@ -52,7 +53,11 @@ def main():
 
     ipoints = []
 
-    for filename in options.filenames:
+    fnames = list()
+    for f in options.filenames:
+        fnames += glob(f)
+
+    for filename in fnames:
 
         rgb = cv2.imread(filename)
         
@@ -74,7 +79,8 @@ def main():
         else:
             gray = rgb
         
-        retval, corners = cv2.findChessboardCorners(gray, patternsize, cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_NORMALIZE_IMAGE)
+#        retval, corners = cv2.findChessboardCorners(gray, patternsize, cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_NORMALIZE_IMAGE)
+        retval, corners = cv2.findChessboardCorners(gray, patternsize )
 
         if retval:
             refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
