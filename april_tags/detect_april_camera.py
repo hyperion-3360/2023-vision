@@ -1,3 +1,48 @@
+
+import threading
+import sys
+import time
+from networktables import NetworkTables
+
+if len(sys.argv) != 2:
+    print("You must supply the ip address of the RoboIO in the 10.xx.xx.2 form")
+    exit(0)
+
+cond = threading.Condition()
+notified = [False]
+
+def connectionListener(connected, info):
+    print(info, '; Connected=%s' % connected)
+    with cond:
+        notified[0]=True
+        cond.notify()
+
+ip = sys.argv[1]
+NetworkTables.initialize(server=ip)
+NetworkTables.addConnectionListener(connectionListener, immediateNotify=True)
+
+with cond:
+    print("Waiting")
+    if not notified[0]:
+        cond.wait()
+
+print("Connected!")
+
+table = NetworkTables.getTable("SmartDashboard")
+
+i = 0
+while True:
+#    print("RobotTime:", table.getNumber("robotTime", -1))
+
+#    table.putNumber("JetsonTime", i)
+    print("JetsonTime:", table.getNumber("JetsonTime", -1))
+
+    time.sleep(1)
+
+    i+=1
+
+
+
 import apriltag
 import cv2
 import argparse
@@ -6,19 +51,18 @@ import json
 import numpy as np
 import math
 
-def export(avg, poses, sink):
+def export(avg, frame, sink):
     #file output
     if sink['type'].lower() == 'f':
         f = sink['dest']
         np.savetxt(f, avg, fmt="%10.5f")
-        for p in poses:
-            np.savetxt(f, p, fmt="%10.5f")
-
     elif sink['type'].lower() == 'n':
         print("not supported yet!")
-#    elif sink['type'].lower() == 'p':
-#        print(avg)
-#        print(poses)
+    elif sink['type'].lower() == 'p':
+        x, y, z = avg[0:3]
+        posx = 0
+        posy = frame.shape[0]
+        cv2.putText(frame, "Rel( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(x, y, z), (posx, posy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
 def rot2eul(R):
     beta = -np.arcsin(R[2,0])
@@ -111,14 +155,13 @@ def process_detection( camera_params, detector, frame, result, tag_info, gui ):
             global_position = np.matmul(tag_pose, tag_relative_camera_pose)
 
             x, y , z = estimated_pose[0][3], estimated_pose[1][3], estimated_pose[2][3]
-            dist = math.sqrt(x*x + y*y + z*z)
-            abs_pos = global_position[0:3, 3].T
+#            abs_pos = global_position[0:3, 3].T
 
-            if gui:
-                cv2.putText(frame, "Rel( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(x, y, z), (ptA[0], ptA[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                cv2.putText(frame, "Abs( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(abs_pos[0], abs_pos[1], abs_pos[2]), (ptA[0], ptA[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+#            if gui:
+#                cv2.putText(frame, "Rel( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(x, y, z), (ptA[0], ptA[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+#                cv2.putText(frame, "Abs( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(abs_pos[0], abs_pos[1], abs_pos[2]), (ptA[0], ptA[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
-            return None
+            return global_position
 
     return None
 
@@ -202,7 +245,7 @@ def main():
                 env_json = json.load(f)
                 tag_info = {x['ID']: x for x in env_json['tags']}
         except(FileNotFoundError, json.JSONDecodeError) as e:
-            print("Something wrong with the environment file... :(")
+            print(e)
             quit()
 
         try:
@@ -225,6 +268,8 @@ def main():
         cap = cv2.VideoCapture( gstreamer_str, cv2.CAP_GSTREAMER)
     else:
         cap = cv2.VideoCapture( 0 )
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     if recording:
         video_out = cv2.VideoWriter(args['record'], cv2.VideoWriter_fourcc(*'MJPG'),15, (640,480))
@@ -257,7 +302,7 @@ def main():
                     cv2.imwrite(os.path.join(path, 'calibration_{}.png'.format(img_seq)),frame)
                     img_seq += 1
             else:
-                frame = cv2.undistort(frame, camera_matrix, dist_coeffs, None, None)
+#                frame = cv2.undistort(frame, camera_matrix, dist_coeffs, None, None)
                 #convert to grayscale
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -278,14 +323,14 @@ def main():
                         estimated_poses.append(pose)
 
                 if estimated_poses:
-                    total = np.zeros((1,3))
+                    total = np.zeros(3,)
 
                     for pose in estimated_poses:
                         total += np.array([pose[0][3], pose[1][3], pose[2][3]])
 
                     average = total / len(estimated_poses)
 
-                    export(average, estimated_poses, sink)
+                    export(average, frame, sink)
 
             if args['gui']:
                 # show the output image after AprilTag detection

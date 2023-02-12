@@ -14,7 +14,7 @@ def connectionListener(connected, info):
     print(info, '; Connected=%s' % connected)
     with cond:
         notified[0]=True
-        cond.notifiy()
+        cond.notify()
 
 ip = sys.argv[1]
 NetworkTables.initialize(server=ip)
@@ -31,9 +31,10 @@ table = NetworkTables.getTable("SmartDashboard")
 
 i = 0
 while True:
-    print("RobotTime:", table.getNumber("robotTime", -1))
+#    print("RobotTime:", table.getNumber("robotTime", -1))
 
-    table.putNumber("JetsonTime", i)
+#    table.putNumber("JetsonTime", i)
+    print("JetsonTime:", table.getNumber("JetsonTime", -1))
 
     time.sleep(1)
 
