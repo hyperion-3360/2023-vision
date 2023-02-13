@@ -1,47 +1,9 @@
 
 import threading
+import queue
 import sys
 import time
 from networktables import NetworkTables
-
-if len(sys.argv) != 2:
-    print("You must supply the ip address of the RoboIO in the 10.xx.xx.2 form")
-    exit(0)
-
-cond = threading.Condition()
-notified = [False]
-
-def connectionListener(connected, info):
-    print(info, '; Connected=%s' % connected)
-    with cond:
-        notified[0]=True
-        cond.notify()
-
-ip = sys.argv[1]
-NetworkTables.initialize(server=ip)
-NetworkTables.addConnectionListener(connectionListener, immediateNotify=True)
-
-with cond:
-    print("Waiting")
-    if not notified[0]:
-        cond.wait()
-
-print("Connected!")
-
-table = NetworkTables.getTable("SmartDashboard")
-
-i = 0
-while True:
-#    print("RobotTime:", table.getNumber("robotTime", -1))
-
-#    table.putNumber("JetsonTime", i)
-    print("JetsonTime:", table.getNumber("JetsonTime", -1))
-
-    time.sleep(1)
-
-    i+=1
-
-
 
 import apriltag
 import cv2
@@ -50,6 +12,38 @@ import os
 import json
 import numpy as np
 import math
+
+def consumer_thread(kwargs):
+
+    notified = [False]
+
+    cond = threading.Condition()
+
+    def connectionListener(connected, info):
+        print(info, '; Connected=%s' % connected)
+        with cond:
+            notified[0]=True
+            cond.notify()
+
+    NetworkTables.addConnectionListener(connectionListener, immediateNotify=True)
+
+    with cond:
+        print("Waiting")
+        if not notified[0]:
+            cond.wait()
+
+    print("Connected!")
+
+    table = NetworkTables.getTable("SmartDashboard")
+
+    while True:
+        item = kwargs['image_queue'].get()
+        if 'command' in item:
+            if item['command'] == 'stop':
+                break
+        elif 'detection' in item:
+            pos, frame = item['detection']
+            table.putNumberArray("position", pos )
 
 def export(avg, frame, sink):
     #file output
@@ -165,144 +159,132 @@ def process_detection( camera_params, detector, frame, result, tag_info, gui ):
 
     return None
 
-def setup_sink( args ):
-    sink = {}
-    sink['type'] = 'f' if args['filesink'] else 'n' if args['nettable'] else 'p'
+def print_thread(kwargs):
 
-    if sink['type'] == 'f' :
+    while True:
+        item = kwargs['image_queue'].get()
+        if 'command' in item:
+            if item['command'] == 'stop':
+                break
+        elif 'detection' in item:
+            pos, frame = item['detection']
+            print( pos, end="\r", flush=True )
+
+def setup_sink( kwargs, threads ):
+
+    args = kwargs['args']
+
+    if args.ipaddr:
+        NetworkTables.initialize(args.ipaddr)
+        threads.append(threading.Thread(target=consumer_thread, args=(kwargs, ), daemon=True))
+        return True
+    elif args.filesink: 
         try:
-            sink['dest'] = open(args['filesink'], 'wb') 
+            f = open(args.filesink, 'wb') 
+            #start thread
+            return True
         except(FileNotFoundError):
             print("Error: cannot open output file, defaulting to console output...")
-            sink['type'] = 'p'
-    #TODO: support nework table
+            return False
+    else:
+        threads.append(threading.Thread(target=print_thread, args = (kwargs, ), daemon=True))
+        return True
 
-    return sink
-
-def clean_sink( sink ):
-    if sink['type'] == 'f':
-        sink['dest'].close()
-
-def main():
-    recording = False
-    save_images = False
-
-    #pretty print numpy
-    np.set_printoptions(precision = 3, suppress = True)
-
+def build_parser():
     # construct the argument parser and parse the arguments
     ap = argparse.ArgumentParser()
 
     #device from which to acquire
-    ap.add_argument("device", type=str, action='store', help="device to capture from" )
+    ap.add_argument("device", type=int, action='store', help="device to capture from" )
+
+    #frame width to acquire
+    ap.add_argument("-w", "--width", type=int, default=640, dest='width', action='store', help="capture width from camera")
+
+    #frame height to acquire
+    ap.add_argument("--height", type=int, default=480, dest='height', action='store', help="capture height from camera")
 
     #the game layout of AprilTags in json format
-#    ap.add_argument("-e --environment", dest='environment', default='environment.json', action='store', help="json file containing the details of the AprilTags env")
-    ap.add_argument("-e --environment", dest='environment', default='env.json', action='store', help="json file containing the details of the AprilTags env")
+    ap.add_argument("-e", "--environment", dest='environment', default='env.json', action='store', help="json file containing the details of the AprilTags env")
 
     #camera parameters as provided by the output of the calibrate_camera.py
-    ap.add_argument("-c --camera", dest='camera', default='camera.json', action='store', help="json file containing the camera parameters")
+    ap.add_argument("-c", "--camera", dest='camera', default='camera.json', action='store', help="json file containing the camera parameters")
 
     #do we want gui output
-    ap.add_argument("-g --gui", dest='gui', action='store_true', help="display AR feed from camera with AprilTag detection")
+    ap.add_argument("-g", "--gui", dest='gui', action='store_true', help="display AR feed from camera with AprilTag detection")
 
     destination = ap.add_argument_group()
     #file output destination
     filedest = destination.add_mutually_exclusive_group()
-    filedest.add_argument("-f --file", dest='filesink', action='store', help="File destination of output results")
+    filedest.add_argument("-f", "--file", dest='filesink', action='store', help="File destination of output results")
 
-    #networktable output destination
-    networktabledest = destination.add_mutually_exclusive_group()
-    networktabledest.add_argument("-n --networktable", dest='nettable', action='store', help="Networktable IP:port destination of output results")
+    #IP addr of network table server output destination 
+    ipv4addr = destination.add_mutually_exclusive_group()
+    ipv4addr.add_argument("-i", "--ipaddr", dest='ipaddr', action='store', help="IP v4 address of the RobotRIO, to access network tables")
 
     #camera calibration
     group = ap.add_argument_group()
     group_x = group.add_mutually_exclusive_group()
-    group_x.add_argument("-s --store", dest='save_images', action='store', help="folder to save calibration images")
+    group_x.add_argument("-s", "--store", dest='save_images', action='store', help="folder to save calibration images")
 
     #record the feed in an mp4 for subsequence processing
     group_x2 = group.add_mutually_exclusive_group()
-    group_x2.add_argument("-r --record", dest='record', action='store', help="filename to record frames in mp4 format")
+    group_x2.add_argument("-r", "--record", dest='record', action='store', help="filename to record frames in mp4 format")
 
-    args = vars(ap.parse_args())
+    return ap
 
-    recording = bool('record' in args.keys() and args['record'])
-
-    save_images = bool('save_images' in args.keys() and args['save_images'])
-
-    if save_images:
-        #wouldn't make sense not to have a gui in calibration
-        args['gui'] = True
-        #in this situation we're not trying to correct the image errors as we're producing the image that will serve for calibration!
-        #check if folder exist if not create it
-        path = args['save_images']
-        if not os.path.exists(path):
-            os.makedirs(path)
-    else:
-        #let's load the environment
-        try:
-            with open(args['environment'], 'r') as f:
-                env_json = json.load(f)
-                tag_info = {x['ID']: x for x in env_json['tags']}
-        except(FileNotFoundError, json.JSONDecodeError) as e:
-            print(e)
-            quit()
-
-        try:
-            with open(args['camera'], 'r') as f:
-                cam_json = json.load(f)
-                camera_params = {'params' : [ cam_json[x] for x in ('fx', 'fy', 'cx', 'cy')], 'dist' : cam_json['dist']}
-        except(FileNotFoundError, json.JSONDecodeError) as e:
-            print("Something wrong with the camera file... :(")
-            quit()
-
-    #TODO: do we want to pass these as arguments... perhaps
-    width = 640
-    height = 480
+def setup_capture( device, width, height ):
 
     if 0:
         #this will work for USB web cams
-        gstreamer_str = "v4l2src device={} ! video/x-raw,framerate=30/1,width={},height={} ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True".format(args['device'], width, height)
+        gstreamer_str = "v4l2src device=/dev/video{} ! video/x-raw,framerate=30/1,width={},height={} ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True".format(device, width, height)
 
         #using gstreamer provides greater control over capture parameters and is easier to test the camera setup using gst-launch
         cap = cv2.VideoCapture( gstreamer_str, cv2.CAP_GSTREAMER)
     else:
-        cap = cv2.VideoCapture( 0 )
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap = cv2.VideoCapture( device )
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
-    if recording:
-        video_out = cv2.VideoWriter(args['record'], cv2.VideoWriter_fourcc(*'MJPG'),15, (640,480))
+    return cap
 
-    #use when saving images
-    img_seq = 0
+def detect_april_tags(kwargs):
+
+    args = kwargs['args']
+    cap = kwargs['cap']
+    camera_params = kwargs['camera_params']
+    tag_info = kwargs['tag_info']
+    image_queue = kwargs['image_queue']
+
+    if args.record: 
+        video_out = cv2.VideoWriter(args.record, cv2.VideoWriter_fourcc(*'MJPG'),15, (args.width,args.height))
 
     #precalculate the optimal distortion matrix and crop parameters based on the image size
-    if not save_images:
+    if not args.save_images:
         dist_coeffs = np.array(camera_params['dist'])
-        camera_matrix = np.array([cam_json['fx'],0, cam_json['cx'], 0, cam_json['fy'], cam_json['cy'], 0, 0, 1]).reshape((3,3))
-
-    sink = setup_sink(args)
+        fc = camera_params['params']
+        camera_matrix = np.array([fc[0],0, fc[2], 0, fc[1], fc[3], 0, 0, 1]).reshape((3,3))
+    else:
+        img_seq = 0
 
     while( cap.isOpened() ):
         #read a frame
         ret, frame = cap.read()
 
-        key = cv2.waitKey(5) & 0xFF
-
-        #check if we quit
-        if key == ord('q'):
-            break
+        if args.gui:
+            key = cv2.waitKey(5) & 0xFF
+            #check if we quit
+            if key == ord('q'):
+                break
 
         #if we have a good frame from the camera
         if ret:
-            if save_images:
+            if args.save_images:
                 #every time space is hit we save an image in the calibration folder
                 if key == ord(' '):
-                    cv2.imwrite(os.path.join(path, 'calibration_{}.png'.format(img_seq)),frame)
+                    cv2.imwrite(os.path.join(args.save_images, 'calibration_{}.png'.format(img_seq)),frame)
                     img_seq += 1
             else:
-#                frame = cv2.undistort(frame, camera_matrix, dist_coeffs, None, None)
+                frame = cv2.undistort(frame, camera_matrix, dist_coeffs, None, None)
                 #convert to grayscale
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -318,7 +300,7 @@ def main():
                 estimated_poses = []
                 # loop over the AprilTag detection results
                 for r in results:
-                    pose = process_detection( camera_params, detector, frame, r, tag_info, bool(args['gui']) or recording )
+                    pose = process_detection( camera_params, detector, frame, r, tag_info, bool(args.gui) or args.record )
                     if isinstance(pose, np.ndarray):
                         estimated_poses.append(pose)
 
@@ -330,23 +312,85 @@ def main():
 
                     average = total / len(estimated_poses)
 
-                    export(average, frame, sink)
+                    #TODO: put in queue export(average, frame, sink)
+                    image_queue.put({'detection':(average, frame)})
 
-            if args['gui']:
+            if args.gui:
                 # show the output image after AprilTag detection
                 cv2.imshow("Image", frame)
 
-            if recording:
+            if args.record:
                 video_out.write(frame) 
 
-    cap.release()
-
-    if recording:
+    if args.record:
         video_out.release()
 
-    cv2.destroyAllWindows()
+    if args.gui:
+        cv2.destroyAllWindows()
 
-    clean_sink(sink)
+    image_queue.put({'command':'stop'})
+
+
+def main():
+
+    parser =  build_parser()
+
+    args = parser.parse_args()
+
+    thread_kwargs = {}
+
+    thread_kwargs['args'] = args
+
+    threads = []
+
+    #pretty print numpy
+    np.set_printoptions(precision = 3, suppress = True)
+
+    if args.save_images:
+        #wouldn't make sense not to have a gui in calibration
+        args.gui = True
+        #in this situation we're not trying to correct the image errors as we're producing the image that will serve for calibration!
+        #check if folder exist if not create it
+        path = args.save_images
+        if not os.path.exists(path):
+            os.makedirs(path)
+    else:
+        #let's load the environment
+        try:
+            with open(args.environment, 'r') as f:
+                env_json = json.load(f)
+                thread_kwargs['tag_info'] = {x['ID']: x for x in env_json['tags']}
+        except(FileNotFoundError, json.JSONDecodeError) as e:
+            print(e)
+            quit()
+
+        #let's load the camera parameters
+        try:
+            with open(args.camera, 'r') as f:
+                cam_json = json.load(f)
+                thread_kwargs['camera_params'] = {'params' : [ cam_json[x] for x in ('fx', 'fy', 'cx', 'cy')], 'dist' : cam_json['dist']}
+        except(FileNotFoundError, json.JSONDecodeError) as e:
+            print("Something wrong with the camera file... :(")
+            quit()
+
+    thread_kwargs['cap'] = setup_capture(args.device, args.width, args.height)
+
+    msg_q = queue.Queue()
+
+    thread_kwargs['image_queue'] = msg_q
+
+    if setup_sink(thread_kwargs, threads):
+        #start producer thread
+        threads.append( threading.Thread(target=detect_april_tags, args = (thread_kwargs, ),daemon=True))
+
+        for t in threads:
+            t.start()
+
+        for t in threads:
+            t.join()
+
+    thread_kwargs['cap'].release()
+    print()
 
 if __name__ == '__main__':
     main()
