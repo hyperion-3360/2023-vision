@@ -232,18 +232,48 @@ def build_parser():
 
     return ap
 
+def gstreamer_pipeline(
+    sensor_id=0,
+    capture_width=1920,
+    capture_height=1080,
+    display_width=640,
+    display_height=480,
+    framerate=30,
+    flip_method=0,
+    ):
+    return (
+        "nvarguscamerasrc sensor-id=%d !"
+        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
+        "nvvidconv flip-method=%d ! "
+        "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
+        "videoconvert ! "
+        "video/x-raw, format=(string)BGR ! appsink drop=True"
+        % (
+            sensor_id,
+            capture_width,
+            capture_height,
+            framerate,
+            flip_method,
+            display_width,
+            display_height,
+        )
+    )
+
 def setup_capture( device, width, height ):
 
-    if 0:
-        #this will work for USB web cams
-        gstreamer_str = "v4l2src device=/dev/video{} ! video/x-raw,framerate=30/1,width={},height={} ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True".format(device, width, height)
+    if device >= 0:
+        if 0:
+            #this will work for USB web cams
+            gstreamer_str = "v4l2src device=/dev/video{} ! video/x-raw,framerate=30/1,width={},height={} ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True".format(device, width, height)
 
-        #using gstreamer provides greater control over capture parameters and is easier to test the camera setup using gst-launch
-        cap = cv2.VideoCapture( gstreamer_str, cv2.CAP_GSTREAMER)
+            #using gstreamer provides greater control over capture parameters and is easier to test the camera setup using gst-launch
+            cap = cv2.VideoCapture( gstreamer_str, cv2.CAP_GSTREAMER)
+        else:
+            cap = cv2.VideoCapture( device )
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     else:
-        cap = cv2.VideoCapture( device )
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap = cv2.VideoCapture( gstreamer_pipeline(), cv2.CAP_GSTREAMER)
 
     return cap
 
@@ -251,8 +281,9 @@ def detect_april_tags(kwargs):
 
     args = kwargs['args']
     cap = kwargs['cap']
-    camera_params = kwargs['camera_params']
-    tag_info = kwargs['tag_info']
+    if not args.save_images:
+        camera_params = kwargs['camera_params']
+        tag_info = kwargs['tag_info']
     image_queue = kwargs['image_queue']
 
     if args.record: 
@@ -267,6 +298,7 @@ def detect_april_tags(kwargs):
         img_seq = 0
 
     while( cap.isOpened() ):
+        time.sleep(0.10)
         #read a frame
         ret, frame = cap.read()
 
