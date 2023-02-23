@@ -530,3 +530,8 @@ if __name__ == "__main__":
     # Draw output boxes on image
     output_file = Path(args.image).with_suffix(".output.png")
     draw_outputs(imraw, output_file, outputs[0], categories)
+
+
+-------------------------------------------
+
+Et pour l'inférence avec le modèle ONNX dans TensorRT, voici la sortie de notre modèle: Donc deux outputs: num_boxes et boxes. Tu peux slice boxes[i, :nboxes] pour garder juste les boxes valides (avec nboxes qui correspond au num_boxes pour la batch i). Puis la dernière dimension contient 6 éléments: (class_pred, class_conf, x1, y1, x2, y2).
