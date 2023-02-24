@@ -195,35 +195,23 @@ class YOLOXTensorRT:
         self.stream.synchronize()
 
         # Reshape outputs
-        if 0:
-            ndet = self.bindings["num_detections"].data.reshape(self.batch_size)
-            boxes = self.bindings["nms_boxes"].data.reshape(self.batch_size, -1, 4)
-            scores = self.bindings["nms_scores"].data.reshape(self.batch_size, -1, 1)
-            classes = self.bindings["nms_classes"].data.reshape(self.batch_size, -1, 1)
+        rc = []
 
-            # Return sequence of detections w/ (class_pred, conf_score, x1, y1, x2, y2)
-            return tuple(
-                np.concatenate((c[:n], s[:n], b[:n]), axis=1)
-                for n, b, s, c in zip(ndet, boxes, scores, classes)
-            )
-        else:
-            ndet = self.bindings["num_boxes"].data.reshape(self.batch_size)
-            if ndet.item() is not 0:
-                preds = self.bindings["boxes"].data[:,:ndet.item(),:]
-                cleaned = np.squeeze(preds)
+        ndet = self.bindings["num_boxes"].data.reshape(self.batch_size)
 
-                boxes = cleaned[:,2:6]
-                scores = cleaned[:,1]
-                classes= cleaned[:,0]
+        if ndet.item() is not 0:
+            preds = self.bindings["boxes"].data[:,:ndet.item(),:]
+            cleaned = np.squeeze(preds)
 
-                rc = []
-
-                for i in np.concatenate((classes[:,None], scores[:,None], boxes), axis=1):
-                    rc.append(tuple(i))
-
-                return rc
+            boxes = cleaned[:,2:6]
+            scores = cleaned[:,1]
+            classes= cleaned[:,0]
 
 
+            for i in np.concatenate((classes[:,None], scores[:,None], boxes), axis=1):
+                rc.append(tuple(i))
+
+        return rc
 
     def warmup(self, n: int = 1) -> None:
         """Warmup model by running inference `n` times."""
@@ -234,7 +222,6 @@ class YOLOXTensorRT:
             image = np.zeros_like(inp.data)
             self(image)
         logger.info("-" * 32)
-
 
 class EngineBuilder:
     """
@@ -335,7 +322,6 @@ class EngineBuilder:
                     with open(engine_path, "wb") as f:
                         f.write(engine)
                 logger.info(f"Serialized engine successfully saved at '{engine_path}'")
-
 
 def export_tensorrt_engine(
     onnx_path: Union[str, Path],
