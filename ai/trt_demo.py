@@ -176,7 +176,7 @@ class YOLOXTensorRT:
             image = image.astype(self.dtype)
 
         # Copy image to pagelocked memory
-        inp = self.bindings["data"]
+        inp = self.bindings["input"]
         np.copyto(inp.data, image)
         # Transfer input data to the GPU
         cuda.memcpy_htod_async(inp.device, inp.data, self.stream)
@@ -189,28 +189,47 @@ class YOLOXTensorRT:
             cuda.memcpy_dtoh_async(
                 self.bindings[out].data, self.bindings[out].device, self.stream
             )
-            for out in ("num_detections", "nms_boxes", "nms_scores", "nms_classes")
+            for out in ("num_boxes", "boxes")
         ]
         # Synchronize the stream
         self.stream.synchronize()
 
         # Reshape outputs
-        ndet = self.bindings["num_detections"].data.reshape(self.batch_size)
-        boxes = self.bindings["nms_boxes"].data.reshape(self.batch_size, -1, 4)
-        scores = self.bindings["nms_scores"].data.reshape(self.batch_size, -1, 1)
-        classes = self.bindings["nms_classes"].data.reshape(self.batch_size, -1, 1)
+        if 0:
+            ndet = self.bindings["num_detections"].data.reshape(self.batch_size)
+            boxes = self.bindings["nms_boxes"].data.reshape(self.batch_size, -1, 4)
+            scores = self.bindings["nms_scores"].data.reshape(self.batch_size, -1, 1)
+            classes = self.bindings["nms_classes"].data.reshape(self.batch_size, -1, 1)
 
-        # Return sequence of detections w/ (class_pred, conf_score, x1, y1, x2, y2)
-        return tuple(
-            np.concatenate((c[:n], s[:n], b[:n]), axis=1)
-            for n, b, s, c in zip(ndet, boxes, scores, classes)
-        )
+            # Return sequence of detections w/ (class_pred, conf_score, x1, y1, x2, y2)
+            return tuple(
+                np.concatenate((c[:n], s[:n], b[:n]), axis=1)
+                for n, b, s, c in zip(ndet, boxes, scores, classes)
+            )
+        else:
+            ndet = self.bindings["num_boxes"].data.reshape(self.batch_size)
+            if ndet.item() is not 0:
+                preds = self.bindings["boxes"].data[:,:ndet.item(),:]
+                cleaned = np.squeeze(preds)
+
+                boxes = cleaned[:,2:6]
+                scores = cleaned[:,1]
+                classes= cleaned[:,0]
+
+                rc = []
+
+                for i in np.concatenate((classes[:,None], scores[:,None], boxes), axis=1):
+                    rc.append(tuple(i))
+
+                return rc
+
+
 
     def warmup(self, n: int = 1) -> None:
         """Warmup model by running inference `n` times."""
         logger.info("-" * 32)
         logger.info(f"TensorRT model warmup with n={n}")
-        inp = self.bindings["data"]
+        inp = self.bindings["input"]
         for _ in range(n):
             image = np.zeros_like(inp.data)
             self(image)
@@ -269,7 +288,7 @@ class EngineBuilder:
 
             # Set the minimum/optimum/maximum values for a shape input tensor
             dims = (self.batch_size, 3)
-            profile.set_shape("data", dims + min_size, dims + opt_size, dims + max_size)
+            profile.set_shape("input", dims + min_size, dims + opt_size, dims + max_size)
             config.add_optimization_profile(profile)
 
             if self.precision == "float16":
@@ -365,6 +384,8 @@ def draw_bboxes(
     """Draw the bounding boxes on the original input image and return it."""
     draw = ImageDraw.Draw(image)
     for box in boxes:
+        print(type(box))
+        print(box)
         category, score, x1, y1, x2, y2 = box
         left = max(0, np.floor(x1 * image.width + 0.5).astype(int))
         top = max(0, np.floor(y1 * image.height + 0.5).astype(int))
@@ -380,7 +401,7 @@ def draw_bboxes(
 
 
 def draw_outputs(
-    image: Image.Image, output_file: str, boxes: np.ndarray, categories: List[str]
+    image: Image.Image, output_file: str, boxes , categories: List[str]
 ) -> None:
     """Draw the bounding boxes onto the original image and save it as a PNG file."""
     obj_detected_img = draw_bboxes(image, boxes, categories)
@@ -505,6 +526,7 @@ if __name__ == "__main__":
     # Load image
     imraw = Image.open(args.image)
     image = convert_to_nchw(imraw, dtype=precision)
+    image = image.astype(np.float32)
 
     if not Path(args.trt).exists():
         # NOTE: Unclear if performance is only really affected when input size is very
@@ -527,11 +549,8 @@ if __name__ == "__main__":
     model.warmup(n=args.warmup)
     outputs = model(image)
 
+    print(type(outputs))
+
     # Draw output boxes on image
     output_file = Path(args.image).with_suffix(".output.png")
-    draw_outputs(imraw, output_file, outputs[0], categories)
-
-
--------------------------------------------
-
-Et pour l'inférence avec le modèle ONNX dans TensorRT, voici la sortie de notre modèle: Donc deux outputs: num_boxes et boxes. Tu peux slice boxes[i, :nboxes] pour garder juste les boxes valides (avec nboxes qui correspond au num_boxes pour la batch i). Puis la dernière dimension contient 6 éléments: (class_pred, class_conf, x1, y1, x2, y2).
+    draw_outputs(imraw, output_file, outputs, categories)
