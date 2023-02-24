@@ -12,8 +12,12 @@ def convert_to_float(input, output):
     if graph:
         del_node = [node for node in graph.nodes if node.name == "Cast_0"][0]
         next_node = del_node.o()
-        next_node.inputs = graph.inputs
+        for i, item in enumerate(next_node.inputs):
+            if item.name == 'x':
+                next_node.inputs[i] = graph.inputs[0]
+        
         del_node.outputs.clear()
+
         graph.cleanup()
 
         for inp in graph.inputs:
