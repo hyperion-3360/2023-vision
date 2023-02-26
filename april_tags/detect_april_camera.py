@@ -38,7 +38,8 @@ def consumer_thread(kwargs):
     table = NetworkTables.getTable("SmartDashboard")
 
     while True:
-        kwargs['run_object_detection'] = table.getBoolean('teleop', True)
+        #no prevision right now to disable object detection, but keep it in the cards just in case
+        kwargs['run_object_detection'] = not table.getBoolean('teleop', False)
 
         item = kwargs['image_queue'].get()
 
@@ -414,7 +415,7 @@ def main():
 
     thread_kwargs['quit'] = False
 
-    thread_kwargs['run_object_detection'] = False #disable object detection by default
+    thread_kwargs['run_object_detection'] = True #disable object detection by default
 
     msg_q = queue.Queue()
 
