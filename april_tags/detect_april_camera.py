@@ -12,6 +12,7 @@ import os
 import json
 import numpy as np
 import math
+import signal
 
 def consumer_thread(kwargs):
 
@@ -37,12 +38,18 @@ def consumer_thread(kwargs):
     table = NetworkTables.getTable("SmartDashboard")
 
     while True:
+        kwargs['run_object_detection'] = table.getBoolean('teleop', True)
+
         item = kwargs['image_queue'].get()
+
         if 'command' in item:
             if item['command'] == 'stop':
                 break
-        elif 'detection' in item:
-            pos, frame = item['detection']
+        elif 'april_tag' in item:
+            pos, frame = item['april_tag']
+            table.putNumberArray("position", pos )
+        elif 'object_detection' in item:
+            pos, frame = item['object_detection']
             table.putNumberArray("position", pos )
 
 def export(avg, frame, sink):
@@ -104,7 +111,7 @@ def quaternion_rotation_matrix(Q):
                             
     return rot_matrix
 
-def process_detection( camera_params, detector, frame, result, tag_info, gui ):
+def process_april_tag_detection( camera_params, detector, frame, result, tag_info, gui ):
     #the function assumes the camera is centered within the robot construction
     if result.tag_id in tag_info.keys() and result.hamming == 0:
         if gui:
@@ -277,6 +284,7 @@ def setup_capture( device, width, height ):
 
     return cap
 
+
 def detect_april_tags(kwargs):
 
     args = kwargs['args']
@@ -287,7 +295,7 @@ def detect_april_tags(kwargs):
     image_queue = kwargs['image_queue']
 
     if args.record: 
-        video_out = cv2.VideoWriter(args.record, cv2.VideoWriter_fourcc(*'MJPG'),15, (args.width,args.height))
+        video_out = cv2.VideoWriter(args.record, cv2.VideoWriter_fourcc('m', 'p', '4', 'v'),15, (args.width,args.height))
 
     #precalculate the optimal distortion matrix and crop parameters based on the image size
     if not args.save_images:
@@ -297,22 +305,19 @@ def detect_april_tags(kwargs):
     else:
         img_seq = 0
 
-    while( cap.isOpened() ):
+    while( cap.isOpened() and not kwargs['quit'] ):
         time.sleep(0.10)
         #read a frame
         ret, frame = cap.read()
-
+    
         if args.gui:
-            key = cv2.waitKey(5) & 0xFF
-            #check if we quit
-            if key == ord('q'):
-                break
+            key = chr(cv2.waitKey(5) & 0xFF) 
 
         #if we have a good frame from the camera
         if ret:
             if args.save_images:
                 #every time space is hit we save an image in the calibration folder
-                if key == ord(' '):
+                if key == ' ':
                     cv2.imwrite(os.path.join(args.save_images, 'calibration_{}.png'.format(img_seq)),frame)
                     img_seq += 1
             else:
@@ -332,7 +337,7 @@ def detect_april_tags(kwargs):
                 estimated_poses = []
                 # loop over the AprilTag detection results
                 for r in results:
-                    pose = process_detection( camera_params, detector, frame, r, tag_info, bool(args.gui) or args.record )
+                    pose = process_april_tag_detection( camera_params, detector, frame, r, tag_info, bool(args.gui) or args.record )
                     if isinstance(pose, np.ndarray):
                         estimated_poses.append(pose)
 
@@ -345,7 +350,7 @@ def detect_april_tags(kwargs):
                     average = total / len(estimated_poses)
 
                     #TODO: put in queue export(average, frame, sink)
-                    image_queue.put({'detection':(average, frame)})
+                    image_queue.put({'april_tag':(average, frame)})
 
             if args.gui:
                 # show the output image after AprilTag detection
@@ -407,9 +412,18 @@ def main():
 
     thread_kwargs['cap'] = setup_capture(args.device, args.width, args.height)
 
+    thread_kwargs['quit'] = False
+
+    thread_kwargs['run_object_detection'] = False #disable object detection by default
+
     msg_q = queue.Queue()
 
     thread_kwargs['image_queue'] = msg_q
+
+    def ctrl_c_handler(signal, frame):
+        thread_kwargs['quit'] = True
+
+    signal.signal(signal.SIGINT, ctrl_c_handler)
 
     if setup_sink(thread_kwargs, threads):
         #start producer thread
