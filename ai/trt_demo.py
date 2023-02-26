@@ -370,8 +370,6 @@ def draw_bboxes(
     """Draw the bounding boxes on the original input image and return it."""
     draw = ImageDraw.Draw(image)
     for box in boxes:
-        print(type(box))
-        print(box)
         category, score, x1, y1, x2, y2 = box
         left = max(0, np.floor(x1 * image.width + 0.5).astype(int))
         top = max(0, np.floor(y1 * image.height + 0.5).astype(int))
@@ -534,8 +532,6 @@ if __name__ == "__main__":
     model = YOLOXTensorRT(args.trt, precision=precision, input_shape=image.shape[-2:])
     model.warmup(n=args.warmup)
     outputs = model(image)
-
-    print(type(outputs))
 
     # Draw output boxes on image
     output_file = Path(args.image).with_suffix(".output.png")
