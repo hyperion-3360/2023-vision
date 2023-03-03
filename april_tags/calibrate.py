@@ -26,6 +26,9 @@ def main():
     parser.add_argument('-d', '--show-detections', action='store_true',
                         help='show detections in window')
 
+    parser.add_argument('-u', '--undistort', action='store_true',
+                        help='show undistorted original images')
+
     options = parser.parse_args()
     
     if options.rows < options.cols:
@@ -98,34 +101,57 @@ def main():
     else:
         opoints = [opoints] * len(ipoints)
 
-        retval, K, dcoeffs, rvecs, tvecs = cv2.calibrateCamera(opoints, ipoints, imagesize, None, None )
+        retval, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(opoints, ipoints, imagesize, None, None )
 
-        fx = K[0,0]
-        fy = K[1,1]
-        cx = K[0,2]
-        cy = K[1,2]
+        fx = mtx[0,0]
+        fy = mtx[1,1]
+        cx = mtx[0,2]
+        cy = mtx[1,2]
 
         params = (fx, fy, cx, cy)
 
         print()
         print('all units below measured in pixels:')
-        print('  fx = {}'.format(K[0,0]))
-        print('  fy = {}'.format(K[1,1]))
-        print('  cx = {}'.format(K[0,2]))
-        print('  cy = {}'.format(K[1,2]))
+        print('  fx = {}'.format(fx))
+        print('  fy = {}'.format(fx))
+        print('  cx = {}'.format(cx))
+        print('  cy = {}'.format(cy))
         print()
         print('pastable into Python:')
         print('  fx, fy, cx, cy = {}'.format(repr(params)))
         print('json:')
         print('{')
-        print('  "fx": {},'.format(K[0,0]))
-        print('  "fy": {},'.format(K[1,1]))
-        print('  "cx": {},'.format(K[0,2]))
-        print('  "cy": {},'.format(K[1,2]))
-        print('  "dist": {}'.format(dcoeffs.tolist()))
+        print('  "fx": {},'.format(fx))
+        print('  "fy": {},'.format(fy))
+        print('  "cx": {},'.format(cx))
+        print('  "cy": {},'.format(cy))
+        print('  "dist": {}'.format(dist.tolist()))
         print('}')
 
         print()
+    if options.undistort:
+        for filename in fnames:
 
+            rgb = cv2.imread(filename)
+            
+            if rgb is None:
+                print('warning: error opening {}, skipping'.format(filename))
+                continue
+
+            h,  w = rgb.shape[:2]
+
+            newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),0,(w,h))
+
+            # undistort
+            undistorted_image = cv2.undistort(rgb, mtx, dist, None, newcameramtx)
+
+            # crop the image
+            x,y,w,h = roi
+            undistorted_image = undistorted_image [y:y+h, x:x+w]
+
+            cv2.imshow('undistort', undistorted_image )
+            cv2.waitKey()
+
+    
 if __name__ == '__main__':
     main()
