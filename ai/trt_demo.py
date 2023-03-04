@@ -201,12 +201,11 @@ class YOLOXTensorRT:
 
         if ndet.item() is not 0:
             preds = self.bindings["boxes"].data[:,:ndet.item(),:]
-            cleaned = np.squeeze(preds)
+            cleaned = np.reshape(preds, preds.shape[1:])
 
             boxes = cleaned[:,2:6]
             scores = cleaned[:,1]
             classes= cleaned[:,0]
-
 
             for i in np.concatenate((classes[:,None], scores[:,None], boxes), axis=1):
                 rc.append(tuple(i))
