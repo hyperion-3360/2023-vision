@@ -13,6 +13,7 @@ import json
 import numpy as np
 import math
 import signal
+import euler
 
 def consumer_thread(kwargs):
 
@@ -47,11 +48,12 @@ def consumer_thread(kwargs):
             if item['command'] == 'stop':
                 break
         elif 'april_tag' in item:
-            pos, frame = item['april_tag']
+            pos, rot = item['april_tag']
             table.putNumberArray("position", pos )
-        elif 'object_detection' in item:
-            pos, frame = item['object_detection']
-            table.putNumberArray("position", pos )
+            table.putNumberArray("rotation", rot )
+#        elif 'object_detection' in item:
+#            pos, frame = item['object_detection']
+#            table.putNumberArray("position", pos )
 
 def export(avg, frame, sink):
     #file output
@@ -65,12 +67,6 @@ def export(avg, frame, sink):
         posx = 0
         posy = frame.shape[0]
         cv2.putText(frame, "Rel( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(x, y, z), (posx, posy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-
-def rot2eul(R):
-    beta = -np.arcsin(R[2,0])
-    alpha = np.arctan2(R[2,1]/np.cos(beta), R[2,2]/np.cos(beta))
-    gamma = np.arctan2(R[1,0]/np.cos(beta), R[0,0]/np.cos(beta))
-    return np.array([beta, alpha, gamma])
 
 def quaternion_rotation_matrix(Q):
     """
@@ -136,6 +132,8 @@ def process_april_tag_detection( camera_params, detector, frame, result, tag_inf
 
         pose, e0, e1 = detector.detection_pose(result, camera_params['params'] )
 
+        angles = euler.rotation_angles(pose[0:3,0:3], 'xyz')
+
         tag_dict = tag_info.get(result.tag_id)
 
         if tag_dict:
@@ -154,16 +152,9 @@ def process_april_tag_detection( camera_params, detector, frame, result, tag_inf
 
             tag_relative_camera_pose = np.linalg.inv(estimated_pose)
 
-            global_position = np.matmul(tag_pose, tag_relative_camera_pose)
+            global_position = np.matmul(tag_pose, tag_relative_camera_pose)[0:3,3]
 
-            x, y , z = estimated_pose[0][3], estimated_pose[1][3], estimated_pose[2][3]
-#            abs_pos = global_position[0:3, 3].T
-
-#            if gui:
-#                cv2.putText(frame, "Rel( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(x, y, z), (ptA[0], ptA[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-#                cv2.putText(frame, "Abs( x: {:5.2f} y: {:5.2f} z:{:5.2f}".format(abs_pos[0], abs_pos[1], abs_pos[2]), (ptA[0], ptA[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-
-            return global_position
+            return global_position,angles
 
     return None
 
@@ -174,9 +165,9 @@ def print_thread(kwargs):
         if 'command' in item:
             if item['command'] == 'stop':
                 break
-        elif 'detection' in item:
-            pos, frame = item['detection']
-            print( pos, end="\r", flush=True )
+#        elif 'detection' in item:
+#            pos, frame = item['detection']
+#            print( pos, end="\r", flush=True )
 
 def setup_sink( kwargs, threads ):
 
@@ -339,19 +330,18 @@ def detect_april_tags(kwargs):
                 # loop over the AprilTag detection results
                 for r in results:
                     pose = process_april_tag_detection( camera_params, detector, frame, r, tag_info, bool(args.gui) or args.record )
-                    if isinstance(pose, np.ndarray):
+                    if pose is not None:
                         estimated_poses.append(pose)
 
                 if estimated_poses:
-                    total = np.zeros(3,)
+                    total_pos = np.zeros(3,)
+                    total_euler = np.zeros(3,)
 
-                    for pose in estimated_poses:
-                        total += np.array([pose[0][3], pose[1][3], pose[2][3]])
+                    for position, angles in estimated_poses:
+                        total_pos += position
+                        total_euler += angles
 
-                    average = total / len(estimated_poses)
-
-                    #TODO: put in queue export(average, frame, sink)
-                    image_queue.put({'april_tag':(average, frame)})
+                    image_queue.put({'april_tag':(total_pos / len(estimated_poses), total_euler / len(estimated_poses))})
 
             if args.gui:
                 # show the output image after AprilTag detection
