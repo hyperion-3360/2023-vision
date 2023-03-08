@@ -26,9 +26,9 @@ NetworkTables.initialize()
 sd = NetworkTables.getTable("SmartDashboard")
 
 i = 0
+
 while True:
     print("pos:", sd.getNumberArray("position", list()))
+    print("rot:", sd.getNumberArray("rotation", list()))
 
-#    sd.putNumber("robotTime", i)
     time.sleep(1)
-#    i += 1

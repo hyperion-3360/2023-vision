@@ -33,7 +33,8 @@ i = 0
 while True:
 #    print("RobotTime:", table.getNumber("robotTime", -1))
 
-#    table.putNumber("JetsonTime", i)
+    table.putNumber("JetsonTime", i)
+    i+=1
     print("JetsonTime:", table.getNumber("JetsonTime", -1))
 
     time.sleep(1)

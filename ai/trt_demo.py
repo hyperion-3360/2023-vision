@@ -64,7 +64,7 @@ class Timer:
     def report(self) -> float:
         mult = self.PRECISION[self.precision]
         total = (self._end - self._start) * mult
-        logger.info(f"{self.name} took {total:.2f}{self.precision}")
+#        logger.info(f"{self.name} took {total:.2f}{self.precision}")
         return total
 
 
@@ -172,8 +172,8 @@ class YOLOXTensorRT:
         :returns: tuple of prediction arrays
         """
         # Set correct input dtype
-        if image.dtype != self.dtype:
-            image = image.astype(self.dtype)
+#        if image.dtype != self.dtype:
+#            image = image.astype(self.dtype)
 
         # Copy image to pagelocked memory
         inp = self.bindings["input"]
@@ -509,7 +509,7 @@ if __name__ == "__main__":
     # Load image
     imraw = Image.open(args.image)
     image = convert_to_nchw(imraw, dtype=precision)
-    image = image.astype(np.float32)
+    image = image.astype(np.uint8)
 
     if not Path(args.trt).exists():
         # NOTE: Unclear if performance is only really affected when input size is very

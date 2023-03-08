@@ -15,6 +15,10 @@ import math
 import signal
 import euler
 
+
+#tag size in meter (15 centimeters, eg 6")
+TAG_SIZE = 0.15
+
 def consumer_thread(kwargs):
 
     notified = [False]
@@ -143,7 +147,7 @@ def process_april_tag_detection( camera_params, detector, frame, result, tag_inf
             T = np.array([ tag_dict['pose']['translation'][x] for x in ['x', 'y', 'z']]).T
             tag_pose[0:3,3] = T
             tag_pose[3,3] = 1
-            sz = 0.15
+            sz = TAG_SIZE
 
             estimated_pose = np.array(pose)
             estimated_pose[0][3] *= sz

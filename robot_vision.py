@@ -2,7 +2,6 @@ import argparse
 import apriltag
 from ai import trt_demo as trt
 from pathlib import Path
-from PIL import Image
 import numpy as np
 import threading
 import json
@@ -10,6 +9,10 @@ from networktables import NetworkTables
 import queue
 import signal
 import cv2
+from april_tags import euler
+
+#tag size in meter (15 centimeters, eg 6")
+TAG_SIZE = 0.15
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Hyperion 3360 Chargedup 2023 vision application")
@@ -61,11 +64,14 @@ def build_arg_parser():
 
     return parser
 
+################################################################################
+# AI model initialization and load in GPU
+# Build the engine if the .trt model file doesn't exist
+# Warmup the model
+# Load the categories
+################################################################################
 def init_AI(args):
     precision = "float16" if args.fp16 else "float32"
-
-    # Display post-processing attributes
-    trt.display_postprocessing_node_attributes(args.onnx)
 
     # Load categories
     categories = trt.load_labels(args.labels)
@@ -92,6 +98,11 @@ def init_AI(args):
 
     return model, categories
 
+################################################################################
+# April tag subsystme initialization
+# Open an parse the game environment JSON
+# Open an parse the camera fundamental parameters
+################################################################################
 def init_april_tag(args):
     tag_info = dict()
     camera_params = dict()
@@ -107,6 +118,12 @@ def init_april_tag(args):
 
     return tag_info, camera_params
 
+################################################################################
+# Communication thread
+# Decouple the communication from the rest of the vision system
+# Reads a message queue and intepret simple commands
+# Push the values in specific sections of network tables
+################################################################################
 def communication_thread(message_q):
 
     notified = [False]
@@ -127,11 +144,11 @@ def communication_thread(message_q):
 
         if not notified[0]:
             with cond:
-                print("Waiting")
                 cond.wait(0.01)
-                if notified[0]:
-                    print("Connected!")
-                    table = NetworkTables.getTable("SmartDashboard")
+
+        if notified[0] and table is None:
+            print("Connected!")
+            table = NetworkTables.getTable("SmartDashboard")
 
         item = message_q.get()
 
@@ -140,10 +157,11 @@ def communication_thread(message_q):
                 break
 
         elif 'april_tag' in item:
-            pos = item['april_tag']
-            print( pos )
+            pos, rot = item['april_tag']
+            print("Position: {}, rotation: {}".format(pos, rot))
             if table:
                 table.putNumberArray("position", pos )
+                table.putNumberArray("rotation", rot )
 
         elif 'detection' in item:
             pred = item['detection']
@@ -152,6 +170,11 @@ def communication_thread(message_q):
             if table:
                 table.putStringArray('detection', [c,str(s),str(x1),str(y1),str(x2),str(y2)])
 
+################################################################################
+# Initialize the network table and communication subsystem
+# Creates the message queue and the communication thread
+# Initialize networktables
+################################################################################
 def init_network_tables(args):
     msg_q = queue.Queue()
     NetworkTables.initialize(args.rio_ip)
@@ -159,66 +182,59 @@ def init_network_tables(args):
 
     return comm_thread, msg_q
 
-def process_april_tag_detection( camera_params, detector, frame, result, tag_info, gui ):
-    #the function assumes the camera is centered within the robot construction
+################################################################################
+# Base on the detector results computes the absolute global position and
+# associate rotation angles
+# TODO: the function assumes the camera is centered within the robot construction
+################################################################################
+def process_april_tag_detection( camera_params, detector, result, tag_info ):
+
+    # using the hamming==0 removes false detections that are frequent in the 
+    # tag16h5 tag family
     if result.tag_id in tag_info.keys() and result.hamming == 0:
-        if gui:
-            # extract the bounding box (x, y)-coordinates for the AprilTag
-            # and convert each of the (x, y)-coordinate pairs to integers
-            (ptA, ptB, ptC, ptD) = result.corners
-            ptB = (int(ptB[0]), int(ptB[1]))
-            ptC = (int(ptC[0]), int(ptC[1]))
-            ptD = (int(ptD[0]), int(ptD[1]))
-            ptA = (int(ptA[0]), int(ptA[1]))
 
-            # draw the bounding box of the AprilTag detection
-            cv2.line(frame, ptA, ptB, (0, 255, 0), 2)
-            cv2.line(frame, ptB, ptC, (0, 255, 0), 2)
-            cv2.line(frame, ptC, ptD, (0, 255, 0), 2)
-            cv2.line(frame, ptD, ptA, (0, 255, 0), 2)
+        pose, _, _ = detector.detection_pose(result, camera_params['params'] )
 
-            # draw the center (x, y)-coordinates of the AprilTag
-            (cX, cY) = (int(result.center[0]), int(result.center[1]))
-            cv2.circle(frame, (cX, cY), 5, (0, 0, 255), -1)
+        # those angles need to be computed before we manipulate the pose matrix
+        angles = euler.rotation_angles(pose[0:3,0:3], 'xyz')
 
-        pose, e0, e1 = detector.detection_pose(result, camera_params['params'] )
-
+        # get the information of that specific tag
         tag_dict = tag_info.get(result.tag_id)
 
         if tag_dict:
+            # build a quaternion based on the pose rotation and translation
             tag_pose = np.zeros((4,4))
             rot = np.array(tag_dict['pose']['rotation'])
             tag_pose[0:3,0:3] = rot
             T = np.array([ tag_dict['pose']['translation'][x] for x in ['x', 'y', 'z']]).T
             tag_pose[0:3,3] = T
             tag_pose[3,3] = 1
-            sz = 0.15
 
             estimated_pose = np.array(pose)
-            estimated_pose[0][3] *= sz
-            estimated_pose[1][3] *= sz
-            estimated_pose[2][3] *= sz
+            # in order to get the correct distance we need to multiply the TAG_SIZE
+            estimated_pose[0][3] *= TAG_SIZE
+            estimated_pose[1][3] *= TAG_SIZE
+            estimated_pose[2][3] *= TAG_SIZE
 
+            # TODO: investigue if that costly inversion could be replaced by a simple transpose
             tag_relative_camera_pose = np.linalg.inv(estimated_pose)
 
-            global_position = np.matmul(tag_pose, tag_relative_camera_pose)
+            global_position = np.matmul(tag_pose, tag_relative_camera_pose)[0:3,3]
 
-            x, y , z = estimated_pose[0][3], estimated_pose[1][3], estimated_pose[2][3]
-
-            return global_position
+            return global_position, angles
 
     return None
 
-def compute_position( frame, camera_matrix, dist_coeffs, camera_params, tag_info ):
+################################################################################
+# Generate all the april tag detection results from the detector on the frame
+# Then averages the results to increase accuracy
+################################################################################
+def compute_position( frame, detector, camera_matrix, dist_coeffs, camera_params, tag_info ):
+    #work with undistorted image
     undistorted = cv2.undistort(frame, camera_matrix, dist_coeffs, None, None)
+
     #convert to grayscale
     gray = cv2.cvtColor(undistorted , cv2.COLOR_BGR2GRAY)
-
-    options = apriltag.DetectorOptions( families='tag16h5',
-                                        debug=False, 
-                                        refine_decode=True,
-                                        refine_pose=True)
-    detector = apriltag.Detector(options)
 
     #generate detections
     results = detector.detect(gray)
@@ -226,35 +242,94 @@ def compute_position( frame, camera_matrix, dist_coeffs, camera_params, tag_info
     estimated_poses = []
     # loop over the AprilTag detection results
     for r in results:
-        pose = process_april_tag_detection( camera_params, detector, undistorted, r, tag_info, False )
-        if isinstance(pose, np.ndarray):
+        pose = process_april_tag_detection( camera_params, detector, r, tag_info )
+        if pose is not None:
             estimated_poses.append(pose)
 
     if estimated_poses:
+        total_pos = np.zeros(3,)
+        total_euler = np.zeros(3,)
+
         # compute average to increase precision and stability
-        total = np.zeros(3,)
+        for position, angles in estimated_poses:
+            total_pos += position
+            total_euler += angles
 
-        for pose in estimated_poses:
-            total += np.array([pose[0][3], pose[1][3], pose[2][3]])
+        return total_pos / len(estimated_poses), total_euler / len(estimated_poses), results
 
-        average = total / len(estimated_poses)
+    return None, None, []
 
-        return average, None
+################################################################################
+# Draw april tags
+# Useful for debugging
+################################################################################
+def draw_april_tags(frame, tag_detections):
+    for result in tag_detections:
+         # extract the bounding box (x, y)-coordinates for the AprilTag
+        # and convert each of the (x, y)-coordinate pairs to integers
+        (ptA, ptB, ptC, ptD) = result.corners
+        ptB = (int(ptB[0]), int(ptB[1]))
+        ptC = (int(ptC[0]), int(ptC[1]))
+        ptD = (int(ptD[0]), int(ptD[1]))
+        ptA = (int(ptA[0]), int(ptA[1]))
 
-    return None, None
+        # draw the bounding box of the AprilTag detection
+        cv2.line(frame, ptA, ptB, (0, 255, 0), 2)
+        cv2.line(frame, ptB, ptC, (0, 255, 0), 2)
+        cv2.line(frame, ptC, ptD, (0, 255, 0), 2)
+        cv2.line(frame, ptD, ptA, (0, 255, 0), 2)
 
+        # draw the center (x, y)-coordinates of the AprilTag
+        (cX, cY) = (int(result.center[0]), int(result.center[1]))
+        cv2.circle(frame, (cX, cY), 5, (0, 0, 255), -1)
+
+################################################################################
+# Bounding box coordinates are returned normalized form from the NN
+# Simple convenience function
+################################################################################
+def normalized_to_absolute(x1,y1,x2,y2, w, h):
+    x1 *= w
+    x2 *= w
+    y1 *= h
+    y2 *= h
+
+    return (int(x1), int(y1), int(x2), int(y2))
+
+################################################################################
+# Draw AI object detection bounding box
+# Useful for debugging
+################################################################################
+def draw_object_detections(frame, predictions):
+    for p in predictions:
+        _, _, x1, y1, x2, y2  = p
+        h, w, _ = frame.shape
+        absx1, absy1, absx2, absy2 = normalized_to_absolute(x1, y1, x2, y2, w, h)
+        cv2.rectangle( frame, (absx1, absy1), (absx2, absy2), (255,0,0), 5)
+
+################################################################################
+# This is the main vision processing loop, it reads frames from camera and 
+# process april tags and AI detection
+################################################################################
 def vision_processing(kwargs):
     args = kwargs['args']
     cap = kwargs['camera']
     camera_params = kwargs['camera_params']
     tag_info = kwargs['tag_info']
     msg_q = kwargs['comm_msg_q']
+
     ai_model = kwargs['model']
 
     dist_coeffs = np.array(camera_params['dist'])
     fc = camera_params['params']
     camera_matrix = np.array([fc[0],0, fc[2], 0, fc[1], fc[3], 0, 0, 1]).reshape((3,3))
+
     precision = "float16" if args.fp16 else "float32"
+
+    options = apriltag.DetectorOptions( families='tag16h5',
+                                        debug=False, 
+                                        refine_decode=True,
+                                        refine_pose=True)
+    detector = apriltag.Detector(options)
 
     while( cap.isOpened() and not kwargs['quit'] ):
         #read a frame
@@ -262,39 +337,48 @@ def vision_processing(kwargs):
 
         #if we have a good frame from the camera
         if ret:
-            pos, rot_mat = compute_position( frame, camera_matrix, dist_coeffs, camera_params, tag_info )
 
-            if pos is not None:
-                msg_q.put({'april_tag':(pos)})
+            if args.apriltag:
+                pos, angles, tag_detections = compute_position( frame, detector, camera_matrix, dist_coeffs, camera_params, tag_info )
+
+                if pos is not None:
+                    msg_q.put({'april_tag':(pos, angles)})
+
+            if args.ai:
+                image = trt.convert_to_nchw(frame, dtype=precision)
+                image = image.astype(np.uint8)
+                predictions = ai_model(image)
+                for p in predictions:
+                    c, s, x1, y1, x2, y2  = p
+                    cat = kwargs['categories'][int(c)]
+                    msg_q.put({'detection':(cat,s) + normalized_to_absolute(x1,y1,x2,y2, args.width, args.height)})
 
             if args.gui:
+                if args.apriltag:
+                    draw_april_tags(frame, tag_detections)
+                if args.ai:
+                    draw_object_detections(frame, predictions)
                 # show the output image after AprilTag detection
                 cv2.imshow("Image", frame)
                 cv2.waitKey(10)
-
-        image = trt.convert_to_nchw(frame, dtype=precision)
-        image = image.astype(np.float32)
-        predictions = ai_model(image)
-        for p in predictions:
-            c, s, x1, y1, x2, y2  = p
-            x1 *= args.width
-            x2 *= args.width
-            y1 *= args.height
-            y2 *= args.height
-            cat = kwargs['categories'][int(c)]
-            msg_q.put({'detection':(cat,s,x1,y1,x2,y2)})
 
     if args.gui:
         cv2.destroyAllWindows()
 
     msg_q.put({'command':'stop'})
 
+################################################################################
+# setup the camera capture parameter, this version is a simple convenience 
+# function but a much more elaborate gstreamer pipeline could be used with 
+# a CSI camera based on nvargus
+################################################################################
 def setup_capture(dev, w, h):
     cap = cv2.VideoCapture( dev )
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
     return cap
 
+################################################################################
 def main():
     kwargs = {}
     kwargs['quit'] = False
