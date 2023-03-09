@@ -3,6 +3,13 @@ import onnx_graphsurgeon as gs
 import onnx
 import numpy as np
 
+def list_input_names(inp):
+    rc = list()
+    for i in inp:
+        rc.append(i.name)
+    
+    return rc
+
 def convert_to_float(input, output):
     try:
         graph = gs.import_onnx(onnx.load(input))
@@ -11,11 +18,14 @@ def convert_to_float(input, output):
 
     if graph:
         del_node = [node for node in graph.nodes if node.name == "Cast_0"][0]
+        to_change = [node for node in graph.nodes if 'x' in list_input_names(node.inputs)]
         next_node = del_node.o()
-        for i, item in enumerate(next_node.inputs):
-            if item.name == 'x':
-                next_node.inputs[i] = graph.inputs[0]
-        
+
+        for node_to_change in to_change:
+            for i, item in enumerate(node_to_change.inputs):
+                if item.name == 'x':
+                    node_to_change.inputs[i] = graph.inputs[0]
+
         del_node.outputs.clear()
 
         graph.cleanup()
